@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monitor de Clases IoT - ESP32 MQTT</title>
+    <!-- Carga de Tailwind CSS para estilos bonitos y responsivos -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Carga de la librería Paho MQTT (¡Necesaria para la comunicación!) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.1.0/paho-mqtt.min.js"></script>
+    <style>
+        /* Usamos la fuente Inter de Google Fonts */
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="bg-gray-100 dark:bg-gray-900 min-h-screen">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // ==========================================================
+        // LÓGICA DE LA APLICACIÓN REACT (MonitorAula.jsx)
+        // ==========================================================
+        const { useState, useEffect, useCallback, useRef } = React;
+
+        // --- CONFIGURACIÓN MQTT ---
+        const MQTT_BROKER = "broker.hivemq.com";
+        const MQTT_PORT = 8884; // Puerto seguro para WebSockets (wss)
+        const MQTT_TOPIC_DATA = "aula/mediciones";
+        const DATA_STALE_THRESHOLD_MS = 30000; // 30 segundos sin datos (ESP32 envía cada 15s)
+
+        // --- LÍMITES PARA LA DETECCIÓN DE FALLOS ---
+        const LIMITS = {
+          TEMP_MIN: 10,
+          TEMP_MAX: 45,
+          HUM_MIN: 20,
+          HUM_MAX: 99,
+          CO2_RAW_MIN: 50,
+          CO2_RAW_MAX: 4000,
+        };
+
+        // Componente para mostrar las barras de medición
+        const BarDisplay = ({ label, value, unit, max, colorClass }) => {
+          const normalizedValue = Math.max(0, Math.min(value, max));
+          const percentage = max > 0 ? (normalizedValue / max) * 100 : 0;
+          const displayValue = value.toFixed(unit === '%' ? 0 : 1);
+
+          return (
+            <div className="mb-6 p-4 bg-white dark:bg-gray-700 rounded-xl shadow-md border border-gray-100 dark:border-gray-600">
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">{label}</span>
+                <span className="text-xl font-bold text-gray-900 dark:text-white">
+                  {displayValue} {unit}
+                </span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-3 dark:bg-gray-600">
+                <div 
+                  className={`h-3 rounded-full transition-all duration-700 ease-out ${colorClass}`} 
+                  style={{ width: `${percentage}%` }}
+                ></div>
+              </div>
+            </div>
+          );
+        };
+
+        // Componente principal de la aplicación
+        const App = () => {
+          const [isConnected, setIsConnected] = useState(false);
+          const [data, setData] = useState({
+            temperatura: 0,
+            humedad: 0,
+            co2_raw: 0,
+            alerta: 0, // 0=OK, 1=Error DHT (viene del ESP32)
+            timestamp: 0, 
+          });
+          const [alerts, setAlerts] = useState([]);
+          const clientRef = useRef(null);
+
+          // Función para actualizar las alertas basadas en datos y tiempo
+          const updateAlerts = useCallback((newData) => {
+            const newAlerts = [];
+            const { temperatura, humedad, co2_raw, alerta } = newData;
+
+            // 1. Alerta enviada por el ESP32 (Fallo de DHT)
+            if (alerta === 1) {
+                newAlerts.push("🔥 ALERTA CRÍTICA: El sensor de Temperatura/Humedad (DHT) reporta un fallo o desconexión.");
+            }
+
+            // 2. Verificar límites Lógicos
+            if (temperatura < LIMITS.TEMP_MIN || temperatura > LIMITS.TEMP_MAX) {
+              newAlerts.push(`⚠️ Temperatura (${temperatura.toFixed(1)}°C) fuera de rango (10°C - 45°C).`);
+            }
+            if (humedad < LIMITS.HUM_MIN || humedad > LIMITS.HUM_MAX) {
+              newAlerts.push(`💧 Humedad (${humedad.toFixed(0)}%) fuera de rango lógico (20% - 99%).`);
+            }
+            if (co2_raw < LIMITS.CO2_RAW_MIN || co2_raw > LIMITS.CO2_RAW_MAX) {
+              newAlerts.push(`💨 Lectura de CO2/Gas (${co2_raw}) en valor extremo.`);
+            }
+
+            setAlerts(prev => {
+                // Mantener las alertas persistentes (como la de conexión)
+                const persistentAlerts = prev.filter(a => a.startsWith('🚨') || a.startsWith('🛑'));
+                const combinedAlerts = [...new Set([...persistentAlerts, ...newAlerts])]; 
+                return combinedAlerts;
+            });
+          }, []);
+
+          // --- MANEJO DE MENSAJES MQTT ---
+          const handleMessage = useCallback((message) => {
+            try {
+              const payload = JSON.parse(message.payloadString);
+              const newData = {
+                temperatura: parseFloat(payload.temperatura),
+                humedad: parseFloat(payload.humedad),
+                co2_raw: parseInt(payload.co2_raw, 10),
+                alerta: parseInt(payload.alerta, 10), // ¡Nueva alerta del ESP32!
+                timestamp: Date.now(),
+              };
+
+              setData(newData);
+              updateAlerts(newData);
+
+            } catch (e) {
+              console.error("Error al parsear el mensaje MQTT:", e);
+            }
+          }, [updateAlerts]);
+
+          // --- CONFIGURACIÓN Y CONEXIÓN MQTT ---
+          useEffect(() => {
+            if (typeof Paho === 'undefined' || !Paho.MQTT) {
+              console.error("Paho MQTT no está cargado. Fallo al iniciar.");
+              return;
+            }
+
+            const client = new Paho.MQTT.Client(
+              MQTT_BROKER,
+              MQTT_PORT,
+              "/ws", 
+              `webapp_${Math.random().toString(16).substr(2, 8)}`
+            );
+
+            client.onConnectionLost = (responseObject) => {
+              console.log("Conexión MQTT perdida:", responseObject.errorMessage);
+              setIsConnected(false);
+              setAlerts(prev => {
+                if (!prev.some(a => a.startsWith('🚨'))) {
+                    return [...prev, "🚨 Conexión MQTT perdida. Intentando reconectar..."];
+                }
+                return prev;
+              });
+            };
+
+            client.onMessageArrived = handleMessage;
+            
+            const connect = () => {
+              client.connect({
+                useSSL: true,
+                timeout: 3,
+                onSuccess: () => {
+                  console.log("Conexión MQTT exitosa.");
+                  setIsConnected(true);
+                  client.subscribe(MQTT_TOPIC_DATA, { qos: 0 });
+                  setAlerts(prev => prev.filter(a => !a.startsWith('🚨'))); // Limpiar alerta de desconexión
+                },
+                onFailure: (responseObject) => {
+                  console.error("Fallo de conexión MQTT:", responseObject.errorMessage);
+                  setIsConnected(false);
+                  setTimeout(connect, 5000); 
+                }
+              });
+            };
+
+            connect();
+            clientRef.current = client;
+
+            return () => {
+              if (clientRef.current && clientRef.current.isConnected()) {
+                clientRef.current.disconnect();
+                console.log("Desconexión MQTT limpia.");
+              }
+            };
+          }, [handleMessage]);
+
+          // --- DETECCIÓN DE DATOS ESTANCADOS (STALE DATA) ---
+          useEffect(() => {
+            const intervalId = setInterval(() => {
+              if (!isConnected) return; 
+
+              const currentTime = Date.now();
+              
+              if (data.timestamp > 0 && (currentTime - data.timestamp) > DATA_STALE_THRESHOLD_MS) {
+                setAlerts(prev => {
+                  const staleAlertExists = prev.some(a => a.startsWith('🛑'));
+                  if (!staleAlertExists) {
+                    return [...prev, `🛑 No se han recibido datos en más de ${DATA_STALE_THRESHOLD_MS / 1000}s. El ESP32 pudo haberse desconectado.`];
+                  }
+                  return prev;
+                });
+              } else {
+                setAlerts(prev => prev.filter(a => !a.startsWith('🛑')));
+              }
+            }, DATA_STALE_THRESHOLD_MS / 2); 
+
+            return () => clearInterval(intervalId);
+          }, [data.timestamp, isConnected]);
+
+          const co2Percentage = Math.min(100, (data.co2_raw / 2000) * 100); 
+          const lastUpdateText = data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : 'Esperando datos...';
+
+          return (
+            <div className="min-h-screen bg-gray-100 dark:bg-gray-900 p-4 sm:p-8 font-sans">
+              <div className="max-w-4xl mx-auto">
+                <header className="text-center mb-10">
+                  <h1 className="text-4xl font-extrabold text-blue-600 dark:text-blue-400">
+                    Monitor de Clases IoT
+                  </h1>
+                  <p className="text-gray-600 dark:text-gray-400 mt-2">
+                    Visualizando el ESP32 por MQTT
+                  </p>
+                  <div className={`mt-4 inline-flex items-center px-4 py-1.5 rounded-full text-sm font-medium ${isConnected ? 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300' : 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300'}`}>
+                    <span className={`w-3 h-3 rounded-full mr-2 ${isConnected ? 'bg-green-500' : 'bg-red-500'} animate-pulse`}></span>
+                    Estado: {isConnected ? 'Conectado a la Placa' : 'Buscando Conexión'}
+                  </div>
+                </header>
+
+                {/* --- SECCIÓN DE ALERTAS --- */}
+                {alerts.length > 0 && (
+                  <div className="mb-8 p-4 bg-red-500/10 border border-red-500 text-red-700 dark:bg-red-900 dark:border-red-700 dark:text-red-300 rounded-xl shadow-md">
+                    <h2 className="font-bold text-lg mb-2 flex items-center">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                      </svg>
+                      ¡Alerta de Sensores / Conexión!
+                    </h2>
+                    <ul className="list-disc list-inside space-y-1">
+                      {alerts.map((alert, index) => (
+                        <li key={index} className="text-sm">{alert}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* --- DATOS PRINCIPALES --- */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                  {/* Tarjeta de Temperatura */}
+                  <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-xl flex flex-col justify-center items-center">
+                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Temperatura</p>
+                    <p className="text-5xl font-extrabold text-indigo-600 dark:text-indigo-400 mt-1">
+                      {data.temperatura.toFixed(1)}°C
+                    </p>
+                    <p className="text-xs text-gray-400 mt-2">
+                        {data.temperatura > 25.0 ? 'Ventilador EN OPERACIÓN' : 'Ventilador APAGADO'}
+                    </p>
+                  </div>
+
+                  {/* Tarjeta de Humedad */}
+                  <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-xl flex flex-col justify-center items-center">
+                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Humedad</p>
+                    <p className="text-5xl font-extrabold text-cyan-600 dark:text-cyan-400 mt-1">
+                      {data.humedad.toFixed(0)}%
+                    </p>
+                     <p className="text-xs text-gray-400 mt-2">
+                        Sensor DHT11/DHT22
+                    </p>
+                  </div>
+                  
+                  {/* Tarjeta de CO2/Gas Crudo */}
+                  <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-xl flex flex-col justify-center items-center">
+                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">CO2/Gas (Crudo)</p>
+                    <p className="text-5xl font-extrabold text-amber-600 dark:text-amber-400 mt-1">
+                      {data.co2_raw}
+                    </p>
+                     <p className="text-xs text-gray-400 mt-2">
+                        Valor analógico MQ-135
+                    </p>
+                  </div>
+                </div>
+
+                {/* --- VISUALIZACIÓN EN BARRAS --- */}
+                <section className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-xl">
+                  <h2 className="text-2xl font-bold mb-6 text-gray-800 dark:text-white">Niveles con Barras</h2>
+                  
+                  <BarDisplay 
+                    label="Temperatura (°C)"
+                    value={data.temperatura}
+                    unit="°C"
+                    max={40} 
+                    colorClass="bg-red-500"
+                  />
+
+                  <BarDisplay 
+                    label="Humedad Relativa"
+                    value={data.humedad}
+                    unit="%"
+                    max={100} 
+                    colorClass="bg-blue-500"
+                  />
+                  
+                  <BarDisplay 
+                    label="CO2 / Calidad del Aire"
+                    value={data.co2_raw}
+                    unit="raw (max 4095)"
+                    max={4095} 
+                    colorClass={data.co2_raw > 1500 ? 'bg-yellow-500' : 'bg-green-500'} 
+                  />
+
+                  <p className="text-sm font-medium text-gray-500 dark:text-gray-400 mt-6">
+                    Última actualización: {lastUpdateText}. El ESP32 publica cada 15 segundos.
+                  </p>
+
+                </section>
+              </div>
+            </div>
+          );
+        };
+        
+        // Iniciar la aplicación React
+        ReactDOM.render(<App />, document.getElementById('root'));
+
+    </script>
+</body>
+</html>
