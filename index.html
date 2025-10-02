@@ -3,322 +3,277 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Monitor de Clases IoT - ESP32 MQTT</title>
-    <!-- Carga de Tailwind CSS para estilos bonitos y responsivos -->
+    <title>Monitor de Aula - Harol</title>
+    <!-- Carga de Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <!-- Carga de la librería Paho MQTT (¡Necesaria para la comunicación!) -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.1.0/paho-mqtt.min.js"></script>
     <style>
-        /* Usamos la fuente Inter de Google Fonts */
-        body { font-family: 'Inter', sans-serif; }
+        /* Estilos personalizados para la estética */
+        :root {
+            --primary: #10b981; /* Tailwind emerald-500 */
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6; /* gray-100 */
+        }
+        .data-card {
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.06);
+            transition: transform 0.2s;
+            cursor: default;
+        }
+        .fan-status {
+            animation: pulse-fan 1.5s infinite;
+        }
+        .error-ring {
+            box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.5); /* Red-500 shadow */
+        }
+        @keyframes pulse-fan {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
     </style>
+    <!-- Carga de la librería Paho MQTT para JavaScript -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.1.0/paho-mqtt.min.js" xintegrity="sha512-V2p/X8c/m6V3k5/t5oG6t/IeGzCgD0bT8U5ZlQ5s2/8s2e7T6M4d8gN9l6z5/1/2n6k4f6/5j6G05d1N2q7u5g==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 </head>
-<body class="bg-gray-100 dark:bg-gray-900 min-h-screen">
-    <div id="root"></div>
+<body class="p-4 sm:p-8">
 
-    <script type="text/babel">
-        // ==========================================================
-        // LÓGICA DE LA APLICACIÓN REACT (MonitorAula.jsx)
-        // ==========================================================
-        const { useState, useEffect, useCallback, useRef } = React;
+    <div class="max-w-4xl mx-auto">
+        <header class="text-center mb-8">
+            <h1 class="text-3xl sm:text-4xl font-extrabold text-gray-800">📊 Monitor de Aula <span class="text-emerald-500">Harol</span></h1>
+            <p class="text-gray-500">Datos en tiempo real publicados por la ESP32.</p>
+        </header>
 
+        <!-- Estado de la Conexión MQTT -->
+        <div id="mqtt-status" class="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 rounded-lg mb-6 flex items-center justify-between">
+            <span id="status-text" class="font-medium">Conectando a broker.hivemq.com...</span>
+            <div id="status-icon" class="w-3 h-3 bg-yellow-500 rounded-full animate-pulse"></div>
+        </div>
+
+        <!-- Dashboard de Datos -->
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+
+            <!-- Temperatura -->
+            <div class="data-card bg-white p-5 rounded-xl text-center">
+                <p class="text-sm font-semibold text-gray-500">Temperatura</p>
+                <div class="flex items-center justify-center mt-2">
+                    <svg class="w-6 h-6 text-red-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+                    <span id="temp-value" class="text-3xl font-bold text-gray-800">--</span>
+                    <span class="text-xl text-gray-500 ml-1">°C</span>
+                </div>
+                <p id="temp-alert" class="text-xs text-red-500 mt-1 h-3"></p>
+            </div>
+
+            <!-- Humedad -->
+            <div class="data-card bg-white p-5 rounded-xl text-center">
+                <p class="text-sm font-semibold text-gray-500">Humedad</p>
+                <div class="flex items-center justify-center mt-2">
+                    <svg class="w-6 h-6 text-blue-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"></path></svg>
+                    <span id="hum-value" class="text-3xl font-bold text-gray-800">--</span>
+                    <span class="text-xl text-gray-500 ml-1">%</span>
+                </div>
+                <p class="text-xs text-transparent mt-1 h-3">_</p>
+            </div>
+
+            <!-- CO2 (Valor Analógico Crudo) -->
+            <div class="data-card bg-white p-5 rounded-xl text-center">
+                <p class="text-sm font-semibold text-gray-500">CO2 / Gas (Raw)</p>
+                <div class="flex items-center justify-center mt-2">
+                    <svg class="w-6 h-6 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 14h18M5 17h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                    <span id="co2-value" class="text-3xl font-bold text-gray-800">----</span>
+                </div>
+                 <p class="text-xs text-transparent mt-1 h-3">_</p>
+            </div>
+
+            <!-- Estado del Ventilador -->
+            <div id="fan-card" class="data-card bg-white p-5 rounded-xl text-center border-2 border-transparent">
+                <p class="text-sm font-semibold text-gray-500">Ventilador</p>
+                <div class="flex flex-col items-center justify-center mt-2">
+                    <svg id="fan-icon" class="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.054 2.054a12.564 12.564 0 00-.714 5.733A12.564 12.564 0 0012 21M9 3h6M5 12H3m18 0h-2"></path></svg>
+                    <span id="fan-status-text" class="text-lg font-bold text-gray-600 mt-2">APAGADO</span>
+                </div>
+                <p id="fan-alert" class="text-xs text-transparent mt-1 h-3">_</p>
+            </div>
+        </div>
+        
+        <!-- Log de Ultima Publicación -->
+        <div class="bg-white p-4 rounded-xl">
+             <p class="text-sm font-semibold text-gray-600 mb-2">Último Mensaje Recibido (JSON)</p>
+             <pre id="payload-log" class="bg-gray-100 p-3 rounded-lg text-xs overflow-x-auto text-gray-700">Esperando datos de la ESP32...</pre>
+        </div>
+
+    </div>
+
+    <script>
         // --- CONFIGURACIÓN MQTT ---
         const MQTT_BROKER = "broker.hivemq.com";
-        const MQTT_PORT = 8884; // Puerto seguro para WebSockets (wss)
-        const MQTT_TOPIC_DATA = "aula/mediciones";
-        const DATA_STALE_THRESHOLD_MS = 30000; // 30 segundos sin datos (ESP32 envía cada 15s)
+        const MQTT_PORT = 8884; // Usamos 8884 para conexión segura (WSS)
+        const MQTT_TOPIC_PUBLISH = "aula/mediciones"; // Tópico de la ESP32
+        const MQTT_CLIENT_ID = "WebApp_Client_" + Math.random().toString(16).substr(2, 8); // ID único
 
-        // --- LÍMITES PARA LA DETECCIÓN DE FALLOS ---
-        const LIMITS = {
-          TEMP_MIN: 10,
-          TEMP_MAX: 45,
-          HUM_MIN: 20,
-          HUM_MAX: 99,
-          CO2_RAW_MIN: 50,
-          CO2_RAW_MAX: 4000,
-        };
-
-        // Componente para mostrar las barras de medición
-        const BarDisplay = ({ label, value, unit, max, colorClass }) => {
-          const normalizedValue = Math.max(0, Math.min(value, max));
-          const percentage = max > 0 ? (normalizedValue / max) * 100 : 0;
-          const displayValue = value.toFixed(unit === '%' ? 0 : 1);
-
-          return (
-            <div className="mb-6 p-4 bg-white dark:bg-gray-700 rounded-xl shadow-md border border-gray-100 dark:border-gray-600">
-              <div className="flex justify-between items-center mb-2">
-                <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">{label}</span>
-                <span className="text-xl font-bold text-gray-900 dark:text-white">
-                  {displayValue} {unit}
-                </span>
-              </div>
-              <div className="w-full bg-gray-200 rounded-full h-3 dark:bg-gray-600">
-                <div 
-                  className={`h-3 rounded-full transition-all duration-700 ease-out ${colorClass}`} 
-                  style={{ width: `${percentage}%` }}
-                ></div>
-              </div>
-            </div>
-          );
-        };
-
-        // Componente principal de la aplicación
-        const App = () => {
-          const [isConnected, setIsConnected] = useState(false);
-          const [data, setData] = useState({
-            temperatura: 0,
-            humedad: 0,
-            co2_raw: 0,
-            alerta: 0, // 0=OK, 1=Error DHT (viene del ESP32)
-            timestamp: 0, 
-          });
-          const [alerts, setAlerts] = useState([]);
-          const clientRef = useRef(null);
-
-          // Función para actualizar las alertas basadas en datos y tiempo
-          const updateAlerts = useCallback((newData) => {
-            const newAlerts = [];
-            const { temperatura, humedad, co2_raw, alerta } = newData;
-
-            // 1. Alerta enviada por el ESP32 (Fallo de DHT)
-            if (alerta === 1) {
-                newAlerts.push("🔥 ALERTA CRÍTICA: El sensor de Temperatura/Humedad (DHT) reporta un fallo o desconexión.");
-            }
-
-            // 2. Verificar límites Lógicos
-            if (temperatura < LIMITS.TEMP_MIN || temperatura > LIMITS.TEMP_MAX) {
-              newAlerts.push(`⚠️ Temperatura (${temperatura.toFixed(1)}°C) fuera de rango (10°C - 45°C).`);
-            }
-            if (humedad < LIMITS.HUM_MIN || humedad > LIMITS.HUM_MAX) {
-              newAlerts.push(`💧 Humedad (${humedad.toFixed(0)}%) fuera de rango lógico (20% - 99%).`);
-            }
-            if (co2_raw < LIMITS.CO2_RAW_MIN || co2_raw > LIMITS.CO2_RAW_MAX) {
-              newAlerts.push(`💨 Lectura de CO2/Gas (${co2_raw}) en valor extremo.`);
-            }
-
-            setAlerts(prev => {
-                // Mantener las alertas persistentes (como la de conexión)
-                const persistentAlerts = prev.filter(a => a.startsWith('🚨') || a.startsWith('🛑'));
-                const combinedAlerts = [...new Set([...persistentAlerts, ...newAlerts])]; 
-                return combinedAlerts;
-            });
-          }, []);
-
-          // --- MANEJO DE MENSAJES MQTT ---
-          const handleMessage = useCallback((message) => {
-            try {
-              const payload = JSON.parse(message.payloadString);
-              const newData = {
-                temperatura: parseFloat(payload.temperatura),
-                humedad: parseFloat(payload.humedad),
-                co2_raw: parseInt(payload.co2_raw, 10),
-                alerta: parseInt(payload.alerta, 10), // ¡Nueva alerta del ESP32!
-                timestamp: Date.now(),
-              };
-
-              setData(newData);
-              updateAlerts(newData);
-
-            } catch (e) {
-              console.error("Error al parsear el mensaje MQTT:", e);
-            }
-          }, [updateAlerts]);
-
-          // --- CONFIGURACIÓN Y CONEXIÓN MQTT ---
-          useEffect(() => {
-            if (typeof Paho === 'undefined' || !Paho.MQTT) {
-              console.error("Paho MQTT no está cargado. Fallo al iniciar.");
-              return;
-            }
-
-            const client = new Paho.MQTT.Client(
-              MQTT_BROKER,
-              MQTT_PORT,
-              "/ws", 
-              `webapp_${Math.random().toString(16).substr(2, 8)}`
-            );
-
-            client.onConnectionLost = (responseObject) => {
-              console.log("Conexión MQTT perdida:", responseObject.errorMessage);
-              setIsConnected(false);
-              setAlerts(prev => {
-                if (!prev.some(a => a.startsWith('🚨'))) {
-                    return [...prev, "🚨 Conexión MQTT perdida. Intentando reconectar..."];
-                }
-                return prev;
-              });
-            };
-
-            client.onMessageArrived = handleMessage;
-            
-            const connect = () => {
-              client.connect({
-                useSSL: true,
-                timeout: 3,
-                onSuccess: () => {
-                  console.log("Conexión MQTT exitosa.");
-                  setIsConnected(true);
-                  client.subscribe(MQTT_TOPIC_DATA, { qos: 0 });
-                  setAlerts(prev => prev.filter(a => !a.startsWith('🚨'))); // Limpiar alerta de desconexión
-                },
-                onFailure: (responseObject) => {
-                  console.error("Fallo de conexión MQTT:", responseObject.errorMessage);
-                  setIsConnected(false);
-                  setTimeout(connect, 5000); 
-                }
-              });
-            };
-
-            connect();
-            clientRef.current = client;
-
-            return () => {
-              if (clientRef.current && clientRef.current.isConnected()) {
-                clientRef.current.disconnect();
-                console.log("Desconexión MQTT limpia.");
-              }
-            };
-          }, [handleMessage]);
-
-          // --- DETECCIÓN DE DATOS ESTANCADOS (STALE DATA) ---
-          useEffect(() => {
-            const intervalId = setInterval(() => {
-              if (!isConnected) return; 
-
-              const currentTime = Date.now();
-              
-              if (data.timestamp > 0 && (currentTime - data.timestamp) > DATA_STALE_THRESHOLD_MS) {
-                setAlerts(prev => {
-                  const staleAlertExists = prev.some(a => a.startsWith('🛑'));
-                  if (!staleAlertExists) {
-                    return [...prev, `🛑 No se han recibido datos en más de ${DATA_STALE_THRESHOLD_MS / 1000}s. El ESP32 pudo haberse desconectado.`];
-                  }
-                  return prev;
-                });
-              } else {
-                setAlerts(prev => prev.filter(a => !a.startsWith('🛑')));
-              }
-            }, DATA_STALE_THRESHOLD_MS / 2); 
-
-            return () => clearInterval(intervalId);
-          }, [data.timestamp, isConnected]);
-
-          const co2Percentage = Math.min(100, (data.co2_raw / 2000) * 100); 
-          const lastUpdateText = data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : 'Esperando datos...';
-
-          return (
-            <div className="min-h-screen bg-gray-100 dark:bg-gray-900 p-4 sm:p-8 font-sans">
-              <div className="max-w-4xl mx-auto">
-                <header className="text-center mb-10">
-                  <h1 className="text-4xl font-extrabold text-blue-600 dark:text-blue-400">
-                    Monitor de Clases IoT
-                  </h1>
-                  <p className="text-gray-600 dark:text-gray-400 mt-2">
-                    Visualizando el ESP32 por MQTT
-                  </p>
-                  <div className={`mt-4 inline-flex items-center px-4 py-1.5 rounded-full text-sm font-medium ${isConnected ? 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300' : 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300'}`}>
-                    <span className={`w-3 h-3 rounded-full mr-2 ${isConnected ? 'bg-green-500' : 'bg-red-500'} animate-pulse`}></span>
-                    Estado: {isConnected ? 'Conectado a la Placa' : 'Buscando Conexión'}
-                  </div>
-                </header>
-
-                {/* --- SECCIÓN DE ALERTAS --- */}
-                {alerts.length > 0 && (
-                  <div className="mb-8 p-4 bg-red-500/10 border border-red-500 text-red-700 dark:bg-red-900 dark:border-red-700 dark:text-red-300 rounded-xl shadow-md">
-                    <h2 className="font-bold text-lg mb-2 flex items-center">
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                      </svg>
-                      ¡Alerta de Sensores / Conexión!
-                    </h2>
-                    <ul className="list-disc list-inside space-y-1">
-                      {alerts.map((alert, index) => (
-                        <li key={index} className="text-sm">{alert}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
-                {/* --- DATOS PRINCIPALES --- */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                  {/* Tarjeta de Temperatura */}
-                  <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-xl flex flex-col justify-center items-center">
-                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Temperatura</p>
-                    <p className="text-5xl font-extrabold text-indigo-600 dark:text-indigo-400 mt-1">
-                      {data.temperatura.toFixed(1)}°C
-                    </p>
-                    <p className="text-xs text-gray-400 mt-2">
-                        {data.temperatura > 25.0 ? 'Ventilador EN OPERACIÓN' : 'Ventilador APAGADO'}
-                    </p>
-                  </div>
-
-                  {/* Tarjeta de Humedad */}
-                  <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-xl flex flex-col justify-center items-center">
-                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Humedad</p>
-                    <p className="text-5xl font-extrabold text-cyan-600 dark:text-cyan-400 mt-1">
-                      {data.humedad.toFixed(0)}%
-                    </p>
-                     <p className="text-xs text-gray-400 mt-2">
-                        Sensor DHT11/DHT22
-                    </p>
-                  </div>
-                  
-                  {/* Tarjeta de CO2/Gas Crudo */}
-                  <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-xl flex flex-col justify-center items-center">
-                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">CO2/Gas (Crudo)</p>
-                    <p className="text-5xl font-extrabold text-amber-600 dark:text-amber-400 mt-1">
-                      {data.co2_raw}
-                    </p>
-                     <p className="text-xs text-gray-400 mt-2">
-                        Valor analógico MQ-135
-                    </p>
-                  </div>
-                </div>
-
-                {/* --- VISUALIZACIÓN EN BARRAS --- */}
-                <section className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-xl">
-                  <h2 className="text-2xl font-bold mb-6 text-gray-800 dark:text-white">Niveles con Barras</h2>
-                  
-                  <BarDisplay 
-                    label="Temperatura (°C)"
-                    value={data.temperatura}
-                    unit="°C"
-                    max={40} 
-                    colorClass="bg-red-500"
-                  />
-
-                  <BarDisplay 
-                    label="Humedad Relativa"
-                    value={data.humedad}
-                    unit="%"
-                    max={100} 
-                    colorClass="bg-blue-500"
-                  />
-                  
-                  <BarDisplay 
-                    label="CO2 / Calidad del Aire"
-                    value={data.co2_raw}
-                    unit="raw (max 4095)"
-                    max={4095} 
-                    colorClass={data.co2_raw > 1500 ? 'bg-yellow-500' : 'bg-green-500'} 
-                  />
-
-                  <p className="text-sm font-medium text-gray-500 dark:text-gray-400 mt-6">
-                    Última actualización: {lastUpdateText}. El ESP32 publica cada 15 segundos.
-                  </p>
-
-                </section>
-              </div>
-            </div>
-          );
-        };
+        // --- REFERENCIAS DOM ---
+        const statusText = document.getElementById('status-text');
+        const statusIcon = document.getElementById('status-icon');
+        const mqttStatusDiv = document.getElementById('mqtt-status');
+        const payloadLog = document.getElementById('payload-log');
         
-        // Iniciar la aplicación React
-        ReactDOM.render(<App />, document.getElementById('root'));
+        const tempValue = document.getElementById('temp-value');
+        const humValue = document.getElementById('hum-value');
+        const co2Value = document.getElementById('co2-value');
+        const tempAlert = document.getElementById('temp-alert');
+        
+        const fanCard = document.getElementById('fan-card');
+        const fanIcon = document.getElementById('fan-icon');
+        const fanStatusText = document.getElementById('fan-status-text');
 
+
+        // --- INSTANCIA DEL CLIENTE MQTT ---
+        let client = null;
+
+        /**
+         * Inicializa la conexión MQTT.
+         */
+        function initMqtt() {
+            // Cliente Paho MQTT. Usamos WSS para seguridad.
+            client = new Paho.Client(MQTT_BROKER, MQTT_PORT, "/mqtt", MQTT_CLIENT_ID);
+
+            // Asignar funciones de callback
+            client.onConnectionLost = onConnectionLost;
+            client.onMessageArrived = onMessageArrived;
+
+            // Opciones de conexión
+            const options = {
+                timeout: 3,
+                useSSL: true, // Requerido para 8884
+                onSuccess: onConnect,
+                onFailure: onFailure
+            };
+
+            try {
+                client.connect(options);
+            } catch (error) {
+                console.error("Error al intentar conectar MQTT:", error);
+                updateStatus("Error de conexión (ver consola)", 'bg-red-500', 'border-red-500', 'bg-red-500');
+            }
+        }
+
+        /**
+         * Actualiza el estado visual de la conexión MQTT.
+         * @param {string} text 
+         * @param {string} bgClass 
+         * @param {string} borderClass 
+         * @param {string} iconClass 
+         */
+        function updateStatus(text, bgClass, borderClass, iconClass) {
+            mqttStatusDiv.className = `bg-white border-l-4 p-4 rounded-lg mb-6 flex items-center justify-between transition-all duration-300 ${bgClass} ${borderClass}`;
+            statusText.textContent = text;
+            statusIcon.className = `w-3 h-3 rounded-full ${iconClass}`;
+        }
+
+        /**
+         * Se llama cuando la conexión MQTT es exitosa.
+         */
+        function onConnect() {
+            console.log("Conexión MQTT exitosa.");
+            client.subscribe(MQTT_TOPIC_PUBLISH);
+            updateStatus("¡Conectado! Esperando datos de la ESP32...", 'bg-emerald-100', 'border-emerald-500', 'bg-emerald-500');
+        }
+
+        /**
+         * Se llama si la conexión MQTT falla.
+         */
+        function onFailure(responseObject) {
+            console.error("Fallo la conexión MQTT:", responseObject.errorMessage);
+            updateStatus("¡Error! Falló la conexión.", 'bg-red-100', 'border-red-500', 'bg-red-500');
+            setTimeout(initMqtt, 5000); // Reintentar en 5 segundos
+        }
+
+        /**
+         * Se llama cuando la conexión se pierde.
+         */
+        function onConnectionLost(responseObject) {
+            if (responseObject.errorCode !== 0) {
+                console.log("Conexión perdida:", responseObject.errorMessage);
+                updateStatus("Conexión Perdida. Reintentando...", 'bg-yellow-100', 'border-yellow-500', 'bg-yellow-500');
+                setTimeout(initMqtt, 3000); // Reintentar inmediatamente
+            }
+        }
+
+        /**
+         * Se llama cada vez que llega un mensaje al tópico suscrito.
+         * @param {Paho.Message} message 
+         */
+        function onMessageArrived(message) {
+            const payload = message.payloadString;
+            payloadLog.textContent = payload; // Muestra el JSON crudo
+            
+            try {
+                const data = JSON.parse(payload);
+                updateDashboard(data);
+            } catch (e) {
+                console.error("Error parseando JSON:", e);
+                payloadLog.textContent = `Error de JSON: ${payload}`;
+            }
+        }
+        
+        /**
+         * Actualiza todos los elementos del dashboard con los datos recibidos.
+         * @param {object} data - Objeto JSON con temperatura, humedad, co2_raw, alerta, fan_status.
+         */
+        function updateDashboard(data) {
+            // --- ACTUALIZAR VALORES ---
+            
+            // Si hay error de sensor (alerta=1), muestra 'ERR' en lugar de 0.0
+            if (data.alerta === 1) {
+                tempValue.textContent = 'ERR';
+                humValue.textContent = 'ERR';
+                tempAlert.textContent = 'Sensor desconectado o con fallo.';
+            } else {
+                tempValue.textContent = data.temperatura.toFixed(1);
+                humValue.textContent = data.humedad.toFixed(1);
+                tempAlert.textContent = ''; // Limpiar alerta
+            }
+
+            // CO2 es siempre el valor crudo (raw)
+            co2Value.textContent = data.co2_raw;
+
+            // --- ESTADO DEL VENTILADOR ---
+            const fanStatus = (data.fan_status || 'APAGADO').toUpperCase();
+            fanStatusText.textContent = fanStatus;
+            
+            // Resetear clases de la tarjeta del ventilador
+            fanCard.classList.remove('border-red-500', 'border-emerald-500');
+            fanIcon.classList.remove('text-red-500', 'text-gray-400', 'text-emerald-500', 'animate-spin', 'fan-status');
+            fanStatusText.classList.remove('text-red-500', 'text-gray-600', 'text-emerald-500');
+
+            if (fanStatus === 'ENCENDIDO') {
+                fanCard.classList.add('border-emerald-500');
+                fanIcon.classList.add('text-emerald-500', 'animate-spin', 'fan-status');
+                fanStatusText.classList.add('text-emerald-500');
+                document.getElementById('fan-alert').textContent = 'Ventilando...';
+            } else if (fanStatus === 'APAGADO') {
+                fanIcon.classList.add('text-gray-400');
+                fanStatusText.classList.add('text-gray-600');
+                document.getElementById('fan-alert').textContent = 'Modo normal.';
+            } else if (fanStatus === 'ERROR') {
+                 // Si el sensor falló (alerta=1), pero el mensaje del ventilador es ERROR
+                fanCard.classList.add('border-red-500');
+                fanIcon.classList.add('text-red-500');
+                fanStatusText.classList.add('text-red-500');
+                document.getElementById('fan-alert').textContent = 'Sensor Falló (Modo Seguro)';
+            }
+
+            // --- ALERTAS DE TEMPERATURA ALTA (Solo visual) ---
+            const maxTemp = 34.0;
+            if (data.temperatura >= maxTemp && data.alerta !== 1) {
+                // Si la temperatura es alta Y no es un error de sensor
+                tempValue.classList.add('error-ring');
+                tempAlert.textContent = `¡ALERTA! (> ${maxTemp}ºC)`;
+            } else {
+                tempValue.classList.remove('error-ring');
+            }
+        }
+
+        // Iniciar la aplicación al cargar la página
+        window.onload = initMqtt;
     </script>
 </body>
 </html>
